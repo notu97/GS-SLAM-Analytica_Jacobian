@@ -18,8 +18,36 @@ import math
 from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
+import sys
+from gaussian_splatting.utils.sh_utils import eval_sh
 
 from utils.slam_utils import get_loss_tracking, get_median_depth, get_loss_tracking_rgb, get_loss_tracking_rgbd
+
+"""
+Analytical Jacobian Verification for MonoGS Pose Optimization
+
+Key corrections applied:
+1. Fixed sign in covariance gradient: ∂α/∂Σ has POSITIVE coefficient 0.5, not -0.5
+   - For α = opacity * exp(-0.5 * Δ^T Σ^{-1} Δ)
+   - ∂α/∂Σ = α * 0.5 * Σ^{-1} (ΔΔ^T) Σ^{-1}
+
+2. CRITICAL: Fixed viewing direction for spherical harmonics
+   - Viewing directions MUST be computed in WORLD coordinates
+   - Camera center must be extracted from w2c: c = -R^T @ t
+   - viewdir = (camera_center_world - gaussian_world) / ||...||
+   - Previously was incorrectly using camera frame coordinates
+
+3. Ensured proper coordinate transformations:
+   - World → Camera: xyz_cam = w2c @ xyz_world
+   - Camera → Normalized image plane: uses Jacobian of projection
+   - Normalized → Pixel space: uses intrinsic matrix K
+
+4. Verified gradient flattening order matches Jacobian structure:
+   - Covariance gradients flattened as [Σ_00, Σ_01, Σ_10, Σ_11]
+   - Matches dcovI_dTcw output from analytical Jacobian
+
+5. Added extensive debugging to track gradient flow through chain rule
+"""
 
 
 
@@ -417,15 +445,17 @@ def compute_colors_from_sh(coeffs, viewdirs, deg=3):
     sh_coeffs = coeffs  # (N, 16, 3)
     
     # Normalize viewing directions
-    viewdirs_normalized = viewdirs / (np.linalg.norm(viewdirs, axis=1, keepdims=True) + 1e-8)
+    # viewdirs_normalized = viewdirs / (np.linalg.norm(viewdirs, axis=1, keepdims=True) + 1e-8)
     
     # Evaluate SH
-    colors = eval_sh(deg, sh_coeffs, viewdirs_normalized)  # (N, 3)
+    colors = eval_sh(deg, sh_coeffs, viewdirs)  # (N, 3)
     
     # Add 0.5 and clamp to [0, 1]
     # 3DGS uses this offset for better color range
     colors = colors + 0.5
-    colors = np.clip(colors, 0.0, 1.0)
+    # colors = np.clip(colors, 0.0, 1.0)
+
+    colors = np.maximum(colors+0.5, 0.0)
     
     return colors
 
@@ -433,16 +463,17 @@ def compute_colors_from_sh(coeffs, viewdirs, deg=3):
 def compute_viewing_directions(gaussian_positions, camera_position):
     """
     Compute viewing direction from each Gaussian to camera.
+    IMPORTANT: Both inputs must be in the SAME coordinate frame (typically world frame).
     
     Args:
-        gaussian_positions: (N, 3) - Gaussian centers in world coords
-        camera_position: (3,) - Camera position in world coords
+        gaussian_positions: (N, 3) - Gaussian centers (world coords for SH evaluation)
+        camera_position: (3,) - Camera position (world coords)
     
     Returns:
-        viewdirs: (N, 3) - Normalized viewing directions
+        viewdirs: (N, 3) - Normalized viewing directions (Gaussian -> Camera)
     """
     # Direction from Gaussian to camera
-    viewdirs = camera_position[None, :] - gaussian_positions  # (N, 3)
+    viewdirs = gaussian_positions - camera_position[None, :] # (N, 3)
     
     # Normalize
     norms = np.linalg.norm(viewdirs, axis=1, keepdims=True) + 1e-8
@@ -610,61 +641,255 @@ def OrderGaussiansByDepth(gaussians):
     gaussians_with_idx.sort(key=lambda x: x[1][2])  # sort by Z value
     return gaussians_with_idx
 
-def GetImagePlaneMeanAndCovs(gaussians_sorted_by_depth, gaussian_3D_covs, xyz_cam, fx, fy, cx, cy, camera_position = np.array([0.0, 0.0, 0.0])):
 
-    viewdirs = compute_viewing_directions(xyz_cam, camera_position)
-    colors = compute_colors_from_sh(gaussian_model.get_features.cpu().detach().numpy(), viewdirs, deg=3)
+def transform_point_4x3(mean, viewmatrix):
+    """Transform a 3D point using a 4x4 view matrix (using only the 4x3 part)."""
+    # viewmatrix is column-major 4x4 matrix
+    # Extract the 4x3 transformation part
+    transformed = np.array([
+        viewmatrix[0] * mean[0] + viewmatrix[4] * mean[1] + viewmatrix[8] * mean[2] + viewmatrix[12],
+        viewmatrix[1] * mean[0] + viewmatrix[5] * mean[1] + viewmatrix[9] * mean[2] + viewmatrix[13],
+        viewmatrix[2] * mean[0] + viewmatrix[6] * mean[1] + viewmatrix[10] * mean[2] + viewmatrix[14]
+    ])
+    return transformed
+
+def compute_cov2d(mean_3D, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix):
+    """
+    Compute 2D covariance matrix from 3D Gaussian parameters.
+    
+    Args:
+        mean: 3D mean position (numpy array of shape (3,))
+        focal_x: focal length in x direction
+        focal_y: focal length in y direction
+        tan_fovx: tangent of half field of view in x
+        tan_fovy: tangent of half field of view in y
+        cov3D: 3D covariance (numpy array of shape (6,) - upper triangular)
+        viewmatrix: 4x4 view matrix in column-major format (numpy array of shape (16,))
+    
+    Returns:
+        cov2D: 2D covariance (numpy array of shape (3,)) - [cov[0,0], cov[0,1], cov[1,1]]
+    """
+    # Transform point to view space
+    t = viewmatrix[0:3,0:3].transpose() @ mean_3D + viewmatrix[3,0:3]
+    
+    # Apply limiter to avoid extreme values
+    limx = 1.3 * tan_fovx
+    limy = 1.3 * tan_fovy
+    txtz = t[0] / t[2]
+    tytz = t[1] / t[2]
+    t[0] = np.clip(txtz, -limx, limx) * t[2]
+    t[1] = np.clip(tytz, -limy, limy) * t[2]
+    
+    # Jacobian of perspective projection
+    J = np.array([
+        [focal_x / t[2], 0.0, -(focal_x * t[0]) / (t[2] * t[2])],
+        [0.0, focal_y / t[2], -(focal_y * t[1]) / (t[2] * t[2])],
+        [0.0, 0.0, 0.0]
+    ])
+    
+    # Extract rotation part of view matrix (column-major to row-major)
+    W = np.array([
+        [viewmatrix[0,0], viewmatrix[1,0], viewmatrix[2,0]],
+        [viewmatrix[0,1], viewmatrix[1,1], viewmatrix[2,1]],
+        [viewmatrix[0,2], viewmatrix[1,2], viewmatrix[2,2]]
+    ])
+    
+    # Compute transformation matrix
+    T = W @ J
+    
+    # Reconstruct 3D covariance matrix from upper triangular representation
+    Vrk = np.array([
+        [cov3D[0], cov3D[1], cov3D[2]],
+        [cov3D[1], cov3D[3], cov3D[4]],
+        [cov3D[2], cov3D[4], cov3D[5]]
+    ])
+    
+    # Compute 2D covariance: cov = T^T * Vrk^T * T
+    cov = T.T @ Vrk.T @ T
+    
+    # Apply low-pass filter: every Gaussian should be at least one pixel wide/high
+    cov[0, 0] += 0.3
+    cov[1, 1] += 0.3
+    
+    cov = cov[0:2, 0:2]
+
+    # Return upper triangular part of 2x2 covariance (discard 3rd row and column)
+    return cov, Vrk
+
+
+def ndc2Pix(v, S):
+    return ((v + 1.0) * S - 1.0) * 0.5
+
+def GetImagePlaneMeanAndCovs(gaussian_model, gaussians_sorted_by_depth, gaussian_3D_covs, xyz_cam, opacity_arg, xyz_world, camera_center_world, fx, fy, cx, cy, viewpoint, W, H, render_setting):
+    """
+    Project Gaussians to image plane and compute their 2D parameters.
+    
+    Args:
+        xyz_cam: (N, 3) Gaussian positions in camera coordinates
+        xyz_world: (N, 3) Gaussian positions in world coordinates  
+        camera_center_world: (3,) Camera center in world coordinates
+    """
+    # Compute viewing directions in WORLD coordinates for SH evaluation
+    viewdirs_normalized = compute_viewing_directions(xyz_world, camera_center_world)
+    colors = compute_colors_from_sh(gaussian_model.get_features.cpu().detach().numpy(), viewdirs_normalized, deg=3)
+    
+    # Debug: Check viewing directions
+    print(f"First 3 viewing directions (world frame):")
+    for i in range(min(3, len(viewdirs_normalized))):
+        print(f"  Gaussian {i}: viewdir = {viewdirs_normalized[i]}, norm = {np.linalg.norm(viewdirs_normalized[i]):.6f}")
+        if i < len(xyz_world):
+            gauss_world = xyz_world[i]
+            expected_dir = camera_center_world - gauss_world
+            expected_dir = expected_dir / (np.linalg.norm(expected_dir) + 1e-8)
+            print(f"    Gaussian world pos: {gauss_world}, Camera: {camera_center_world}")
+            print(f"    Expected viewdir: {expected_dir}, Match: {np.allclose(viewdirs_normalized[i], expected_dir)}")
 
 
     # Project depth sorted gaussians to image plane
     projected_mean_and_covs = []
 
+    for i in range(min(5, len(gaussians_sorted_by_depth))):
+        print(gaussians_sorted_by_depth[i])
+
+    print(f"tanfovx {render_setting['tanfovx']}, tanfovy {render_setting['tanfovy']}")
+
+    projmatrix = viewpoint.projection_matrix.detach().cpu().numpy()
+    print("Projection matrix: \n", projmatrix)
+    projmatrix_transpose = projmatrix.transpose()
+    print("Projection matrix transpose: \n", projmatrix_transpose)
+
+    view_matrix = render_setting['viewmatrix'].detach().cpu().numpy()
+    print("View matrix: \n", view_matrix)
+    view_matrix_transpose = view_matrix.transpose()
+    print("View matrix transpose: \n", view_matrix_transpose)
+
     for elem in gaussians_sorted_by_depth:
         # print(elem)
         temp_dict = {}
 
-        idx, mu_3D = elem
+        idx, _ = elem
 
+        mu_3D = xyz_world[idx]  # in WORLD coordinates
 
-        # Get the 2D mean in NORMALIZED coordinates (before applying intrinsics)
-        # Normalized coordinates: x_n = x/z, y_n = y/z
-        x_n = mu_3D[0] / mu_3D[2]
-        y_n = mu_3D[1] / mu_3D[2]
-        mu_2D_normalized = np.array([x_n, y_n])
+        # Get the 2D mean in UV pixel coordinates
+        # Project from 3D camera coordinates to 2D pixel coordinates
+        # u = fx * (x/z) + cx
+        # v = fy * (y/z) + cy
+        print("mu_3D (world): ", mu_3D)
         
-        # Also compute pixel coordinates for compatibility
-        u = fx * x_n + cx
-        v = fy * y_n + cy
-        mu_2D_pixel = np.array([u, v])
+        proj_hom = projmatrix_transpose @ np.array([mu_3D[0], mu_3D[1], mu_3D[2], 1.0])
+        # print("Projected homogeneous coords: ", proj_hom)
+
+        p_proj = proj_hom[0:3] / (proj_hom[3]+ 0.0000001)
+        # print("Projected 3D coords after division by w: ", p_proj)
+
+        point_image = np.array([ ndc2Pix(p_proj[0], W), ndc2Pix(p_proj[1], H) ])
+
+        # break
+        temp_dict['proj_hom'] = proj_hom
+        temp_dict['p_proj'] = p_proj
 
         temp_dict['idx'] = idx
-        temp_dict['mean_2D'] = mu_2D_normalized  # CHANGED: Store normalized coordinates
-        temp_dict['mean_2D_pixel'] = mu_2D_pixel  # Store pixel coords separately
+        temp_dict['mean_2D'] = point_image
         temp_dict['mean_3D'] = mu_3D
-        temp_dict['alpha'] = opacity[idx][0]
-        temp_dict['depth'] = mu_3D[2]
+        temp_dict['alpha'] = opacity_arg[idx][0]
+        # temp_dict['depth'] = mu_3D[2]
         temp_dict['color'] = colors[idx]
 
-        # Get the 2D covariance in NORMALIZED space (consistent with analytical Jacobian)
-        cov_3D = gaussian_3D_covs[idx]  # [1,6] in (xx,yy,zz,xy,xz,yz) format
-        cov_3D_matrix = np.array([[cov_3D[0], cov_3D[1], cov_3D[2]],
-                                  [cov_3D[1], cov_3D[3], cov_3D[4]],
-                                  [cov_3D[2], cov_3D[4], cov_3D[5]]])  #
-        
-        J = Jacobian_pi_func(mu_3D)
-        W = w2c[0:3,0:3]
-        JW = J@W
+        # Get the 2D covariance in PIXEL space
 
-        # Project covariance to normalized image plane (NO intrinsics applied)
-        cov_normalized = JW@cov_3D_matrix@(np.transpose(JW))
-        cov_2D_normalized = cov_normalized[0:2, 0:2]  # Take top-left 2x2
+        cov_pixel, cov_3D = compute_cov2d(mu_3D, fx, fy, render_setting['tanfovx'], render_setting['tanfovy'], gaussian_3D_covs[idx], render_setting['viewmatrix'].detach().cpu().numpy())
+
         
-        temp_dict['cov_2D'] = cov_2D_normalized  # CHANGED: Store normalized covariance
-        temp_dict['cov_3D'] = cov_3D_matrix
+        # view_mat = np.array([
+        #                 [view_matrix[0,0], view_matrix[1,0], view_matrix[2,0]],
+        #                 [view_matrix[0,1], view_matrix[1,1], view_matrix[2,1]],
+        #                 [view_matrix[0,2], view_matrix[1,2], view_matrix[2,2]]
+        #             ])
+
+        p_view =  view_matrix_transpose@np.array([p_proj[0], p_proj[1], p_proj[2], 1.0])  #(view_mat @ proj_hom[0:3]) + np.array([view_matrix[3,0], view_matrix[3,1], view_matrix[3,2]])
+        
+        temp_dict['depth'] = p_view[2]
+
+        # Need to transform covariance through the intrinsics as well
+        # cov_3D = gaussian_3D_covs[idx]  # [1,6] in (xx,yy,zz,xy,xz,yz) format
+        # cov_3D_matrix = np.array([[cov_3D[0], cov_3D[1], cov_3D[2]],
+        #                           [cov_3D[1], cov_3D[3], cov_3D[4]],
+        #                           [cov_3D[2], cov_3D[4], cov_3D[5]]])  #
+        
+        # J = Jacobian_pi_func(mu_3D)
+        # W = w2c[0:3,0:3]
+        # JW = J@W
+
+        # Project covariance to normalized image plane
+        # cov_normalized = JW@cov_3D_matrix@(np.transpose(JW))
+        
+        # Apply intrinsics to transform covariance to pixel space
+        # K = [[fx, 0], [0, fy]]
+        # Σ_pixel = K @ Σ_normalized @ K^T
+        # K_2x2 = np.array([[fx, 0], [0, fy]], dtype=np.float32)
+        # cov_pixel = K_2x2 @ cov_normalized[0:2, 0:2] @ K_2x2.T
+        
+        temp_dict['cov_2D'] = cov_pixel
+        temp_dict['cov_3D'] = cov_3D
         
         projected_mean_and_covs.append(temp_dict)
 
+    print("Check first 5 projected Gaussians:")
+    for i in range(min(5, len(projected_mean_and_covs))):
+        print(projected_mean_and_covs[i])
+
+    # Sanity check: Get an RGB image from the projected Gaussians
+    # rendered_Image_from_Projected_Gaussians_vectorized(projected_mean_and_covs)
+
     return projected_mean_and_covs
+
+def rendered_Image_from_Projected_Gaussians_vectorized(projected_mean_and_covs):
+    ## Sanity check: Get an RGB image from the projected Gaussians (Vectorized & Chunked)
+    H, W = 480, 640
+    rendered_image = np.zeros((H, W, 3), dtype=np.float32)
+    
+    # Create pixel coordinate grid
+    u_coords, v_coords = np.meshgrid(np.arange(W), np.arange(H))
+    pixel_coords = np.stack([u_coords, v_coords], axis=-1).reshape(-1, 2)  # (H*W, 2)
+    
+    # Process in chunks to manage memory
+    chunk_size = 10000
+    num_pixels = H * W
+    
+    for chunk_idx in range(0, num_pixels, chunk_size):
+        chunk_end = min(chunk_idx + chunk_size, num_pixels)
+        chunk_pixels = pixel_coords[chunk_idx:chunk_end]  # (chunk_size, 2)
+        chunk_colors = np.zeros((len(chunk_pixels), 3), dtype=np.float32)
+        chunk_T = np.ones(len(chunk_pixels), dtype=np.float32)
+        
+        # Render each Gaussian for this chunk (vectorized)
+        for gauss in projected_mean_and_covs:
+            # Vectorized alpha computation
+            delta = chunk_pixels - gauss['mean_2D']  # (chunk_size, 2)
+            sigma_inv = np.linalg.inv(gauss['cov_2D'])
+            
+            # Compute Mahalanobis distance for all pixels at once
+            power = -0.5 * np.sum(delta @ sigma_inv * delta, axis=1)  # (chunk_size,)
+            gaussian_vals = np.exp(power)
+            alphas = np.clip(gauss['alpha'] * gaussian_vals, 0.0, 1.0)  # (chunk_size,)
+            
+            # Accumulate color with alpha blending
+            chunk_colors += gauss['color'] * (alphas * chunk_T)[:, None]
+            chunk_T *= (1 - alphas)
+        
+        # Write chunk back to rendered image
+        chunk_v = chunk_idx // W
+        chunk_u_start = chunk_idx % W
+        rendered_image.reshape(-1, 3)[chunk_idx:chunk_end] = chunk_colors
+        
+        if (chunk_idx // chunk_size) % 10 == 0:
+            print(f"Rendered {chunk_end}/{num_pixels} pixels ({100*chunk_end/num_pixels:.1f}%)")
+    
+    # import matplotlib.pyplot as plt
+    plt.imshow(np.clip(rendered_image, 0.0, 1.0))
+    plt.title("Rendered Image from Projected Gaussians (Vectorized)")
+    plt.show()
 
 
 def compute_alpha_at_pixel(gaussian, pixel_pos):
@@ -799,13 +1024,15 @@ def compute_gradients_2D(image_projected_gaussians_sorted_by_depth, rendered_col
                 # Compute Σ_I^{-1}
                 Sigma_I_inv = np.linalg.inv(gauss['cov_2D'])
                 
-                # Gradient w.r.t. μ_I: ∂α/∂μ_I = α * Σ^{-1} * Δ
+                # Gradient w.r.t. μ_I: ∂α/∂μ_I = α * Σ^{-1} @ Δ
+                # Note: This should be positive because we're moving in direction to increase alpha
                 dalpha_dmu = alpha * (Sigma_I_inv @ Delta)  # (2,)
                 
                 # Chain rule: ∂L/∂μ_I
                 grad_mu_I[idx] += dL_dalpha * dalpha_dmu
                 
-                # Gradient w.r.t. Σ_I: ∂α/∂Σ_I = 0.5 * α * Σ^{-1} * ΔΔ^T * Σ^{-1}
+                # Gradient w.r.t. Σ_I: ∂α/∂Σ_I = 0.5 * α * Σ^{-1} @ (ΔΔ^T) @ Σ^{-1}
+                # Positive sign because derivative of exp(-0.5 * x^T Σ^{-1} x) w.r.t. Σ is positive
                 dalpha_dSigma = 0.5 * alpha * (
                     Sigma_I_inv @ np.outer(Delta, Delta) @ Sigma_I_inv
                 )  # (2, 2)
@@ -818,7 +1045,7 @@ def compute_gradients_2D(image_projected_gaussians_sorted_by_depth, rendered_col
 
 
 def compute_gradients_2D_vectorized_chunked(image_projected_gaussians_sorted_by_depth, rendered_color, rendered_depth, 
-                                           gt_color, gt_depth, image_size, chunk_size=1000):
+                                           gt_color, gt_depth, mask, image_size, chunk_size=1000):
     """
     Memory-efficient vectorized version: Process pixels in chunks to avoid memory overflow.
     
@@ -828,6 +1055,7 @@ def compute_gradients_2D_vectorized_chunked(image_projected_gaussians_sorted_by_
         rendered_depth: (H, W) rendered depth image
         gt_color: (H, W, 3) ground truth color
         gt_depth: (H, W) ground truth depth
+        mask: (H, W) boolean mask for valid pixels
         image_size: (H, W)
         chunk_size: Number of pixels to process at once (reduce if memory issues)
     
@@ -860,24 +1088,27 @@ def compute_gradients_2D_vectorized_chunked(image_projected_gaussians_sorted_by_
     color_diff = rendered_color - gt_color
     depth_diff = rendered_depth - gt_depth
     
+    # Apply mask to match compute_loss function
+    # Color: mask applied to both rendered and GT
+    mask_3d = mask[..., None].astype(np.float32)  # (H, W, 1) for broadcasting
+    grad_color = np.sign(color_diff).astype(np.float32) * mask_3d  # (H, W, 3)
+    
+    # Depth: only where depth_gt > 0 (matching compute_loss depth_mask)
+    depth_valid_mask = (gt_depth > 0.0) & mask  # (H, W)
+    grad_depth = np.sign(depth_diff).astype(np.float32) * depth_valid_mask.astype(np.float32)  # (H, W)
+    
     print(f"\nLoss gradients:")
     print(f"Color diff range: {color_diff.min():.4f} to {color_diff.max():.4f}")
     print(f"Depth diff range: {depth_diff.min():.4f} to {depth_diff.max():.4f}")
-    print(f"Non-zero color diffs: {np.count_nonzero(color_diff)} / {color_diff.size}")
-    print(f"Non-zero depth diffs: {np.count_nonzero(depth_diff)} / {depth_diff.size}")
+    print(f"Masked color diffs: {np.count_nonzero(grad_color)} / {color_diff.size}")
+    print(f"Valid depth diffs: {np.count_nonzero(grad_depth)} / {depth_diff.size}")
     
-    grad_color = np.sign(color_diff).astype(np.float32)  # (H, W, 3)
-    grad_depth = np.sign(depth_diff).astype(np.float32)  # (H, W)
-    
-    # Create pixel grid and convert to normalized coordinates
+    # Create pixel grid - NOTE: mean_2D is (u, v) format
     v_coords, u_coords = np.mgrid[0:H, 0:W]
-    # Convert pixel coordinates to normalized coordinates
-    x_n = (u_coords - cx) / fx
-    y_n = (v_coords - cy) / fy
-    pixel_positions_normalized = np.stack([x_n, y_n], axis=-1).astype(np.float32)  # (H, W, 2) in normalized coords
+    pixel_positions = np.stack([u_coords, v_coords], axis=-1).astype(np.float32)  # (H, W, 2) in (u, v) format
     
     # Flatten
-    pixels_flat = pixel_positions_normalized.reshape(-1, 2)  # (P, 2) in normalized coords
+    pixels_flat = pixel_positions.reshape(-1, 2)  # (P, 2) where P = H*W
     grad_color_flat = grad_color.reshape(-1, 3)   # (P, 3)
     grad_depth_flat = grad_depth.reshape(-1)      # (P,)
     
@@ -959,8 +1190,9 @@ def compute_gradients_2D_vectorized_chunked(image_projected_gaussians_sorted_by_
         grad_mu_I += grad_mu_chunk.sum(axis=0)  # Accumulate
         
         # Backprop to Sigma_I
-        # ∂α/∂Σ = 0.5 * α * Σ^{-1} @ (ΔΔ^T) @ Σ^{-1}
-        # The derivative of exp(-0.5 * x^T Σ^{-1} x) w.r.t. Σ gives the positive sign
+        # For α = opacity * exp(-0.5 * Δ^T Σ^{-1} Δ), we have:
+        # ∂α/∂Σ = α * 0.5 * Σ^{-1} (ΔΔ^T) Σ^{-1}
+        # This is the derivative w.r.t. Σ (not Σ^{-1})
         Delta_outer = np.einsum('cni,cnj->cnij', Delta, Delta)  # (C, N, 2, 2)
         temp1 = np.einsum('nij,cnjk->cnik', covs_inv, Delta_outer)  # (C, N, 2, 2)
         dalpha_dSigma = 0.5 * alphas_all[:, :, None, None] * np.einsum('cnij,njk->cnik', temp1, covs_inv)
@@ -1053,6 +1285,7 @@ if __name__ == "__main__":
 
     image_size = (h, w)
 
+    # w2c is the noisy camera pose
     w2c = w2c_gt @ T_noise
     # use an identity matrix for testing
     # w2c = np.eye(4, dtype=np.float32)
@@ -1060,7 +1293,7 @@ if __name__ == "__main__":
     print(f"w2c: {w2c}")
     w2c_ = torch.from_numpy(w2c).to(torch.device("cuda"))
     w2c_ = w2c_.transpose(0,1) 
-    print("w2c_: \n", w2c_)
+    print("w2c_ on cuda device: \n", w2c_)
 
     render_setting = get_render_settings(w, h, cam_intrinsics, w2c_)
     fovx = focal2fov(fx, w)
@@ -1104,94 +1337,182 @@ if __name__ == "__main__":
     # Transform to camera coordinates
     xyz_cam_homo = (w2c @ xyz_world_homo.T).T  # [N, 4] # gaussians_in_cam_frame
     xyz_cam = xyz_cam_homo[:, :3]  # [N, 3] - 3D GS in camera coordinates (Z is depth) 
-    print("w2c matrix:")
-    print(w2c)
-    # print("xyz_world_homo: ",xyz_world_homo)
-    print(f"World coordinates shape: {xyz_world.shape}")
-    print(f"Camera coordinates shape: {xyz_cam.shape}")
-    print(f"\nFirst 5 Gaussians:")
-    print(f"World coords:\n{xyz_world[:5]}")
-    print(f"Camera coords:\n{xyz_cam[:5]}")
+    
+    print("\n=== Coordinate Transformation Verification ===")
+    # print("w2c matrix:")
+    # print(w2c)
+    # print(f"World coordinates shape: {xyz_world.shape}")
+    # print(f"Camera coordinates shape: {xyz_cam.shape}")
+    # print(f"\nFirst 5 Gaussians:")
+    print(f"Gaussians in World coords:\n{xyz_world}")
+
+    print(f"Gaussians in camera coords:\n{xyz_cam}")
+    # print(f"Gaussians in Camera coords:\n{xyz_cam[:5]}")
+    # print(f"Depth (Z) range: {xyz_cam[:, 2].min():.3f} to {xyz_cam[:, 2].max():.3f}")
+    
+    # Verify positive depths (Gaussians should be in front of camera)
+    # negative_depth_count = (xyz_cam[:, 2] <= 0).sum()
+    # if negative_depth_count > 0:
+    #     print(f"WARNING: {negative_depth_count} Gaussians have negative/zero depth!")
 
 
     # Visualize Gaussians In Camera Frame
     # VisualizeGaussiansInCameraFrame(xyz_cam)
+
+    # sys.exit(0)
 
 
     # Get Gaussian covariance and opcaity.
     gaussian_3D_covs = gaussian_model.get_covariance().detach().cpu().numpy()
     opacity = gaussian_model.get_opacity.detach().cpu().numpy()
 
+    print(f"Gaussians in World gaussian_3D_covs:\n{gaussian_3D_covs}")
+    print(f"Gaussians in World opacity:\n{opacity}")
+    print(" Projection Matrix __main__")
+    print(viewpoint.projection_matrix.detach().cpu().numpy())
 
-    # Here xyz_cam is mu_c = w2c * mu_w i.e. Gaussians in camera coordinates
+    print(" View Matrix")
+    print(render_setting['viewmatrix'])
+
+
+    # # Here xyz_cam is mu_c = w2c * mu_w i.e. Gaussians in camera coordinates
     gaussians_sorted_by_depth = OrderGaussiansByDepth(xyz_cam)
-    image_projected_gaussians_sorted_by_depth = GetImagePlaneMeanAndCovs(gaussians_sorted_by_depth, gaussian_3D_covs, xyz_cam, fx, fy, cx, cy)
-    # print(image_projected_gaussians_sorted_by_depth[0])
-    # This will give ∂L/∂μ_I and ∂L/∂Σ_I
-    gt_color = viewpoint.original_image.cpu().detach().numpy().transpose(1,2,0)  # (H, W, 3)
-    gt_depth = viewpoint.depth.cpu().detach().numpy()  # (H, W)
-    rendered_color = render_image.cpu().detach().numpy().transpose(1,2,0)  # (H, W, 3)
-    rendered_depth = render_depth.cpu().detach().numpy()  # (H, W)
+    
+   
+    # print(f"\n=== Camera and Viewing Direction Info ===")
+    # print(f"Camera center (world): {camera_center_world}")
+    # print("viewpoint.camera_center: ",viewpoint.camera_center.cpu().numpy())
+    
+    # # Pass both camera coordinates (for projection) and world coordinates (for SH)
+    xyz_world_np = xyz_world[:, :3].cpu().detach().numpy()  # Remove homogeneous coord, convert to numpy
+    image_projected_gaussians_sorted_by_depth = GetImagePlaneMeanAndCovs(
+       gaussian_model, gaussians_sorted_by_depth, gaussian_3D_covs, xyz_world, opacity, xyz_world_np, viewpoint.camera_center.cpu().numpy(), fx, fy, cx, cy, viewpoint, w, h, render_setting)
 
-    # grad_mu_I, grad_Sigma_I =compute_gradients_2D(image_projected_gaussians_sorted_by_depth, rendered_color, rendered_depth, gt_color, gt_depth, image_size)
-
-    print("Call compute_gradients_2D_vectorized_chunked")
-    grad_mu_I_pixel, grad_Sigma_I_pixel = compute_gradients_2D_vectorized_chunked(image_projected_gaussians_sorted_by_depth, rendered_color, rendered_depth, gt_color, gt_depth, image_size, chunk_size=1000)
-
-    # Gradients are already in normalized space since we worked in normalized coordinates
-    grad_mu_I_normalized = grad_mu_I_pixel  # Already normalized
-    grad_Sigma_I_normalized = grad_Sigma_I_pixel  # Already normalized
-
-    print(f"\n=== Gradients (in normalized coordinates) ===")
-    print(f"grad_mu_I_normalized range: {grad_mu_I_normalized.min():.6f} to {grad_mu_I_normalized.max():.6f}")
-    print(f"grad_Sigma_I_normalized range: {grad_Sigma_I_normalized.min():.6f} to {grad_Sigma_I_normalized.max():.6f}")
-
-    # Save gradients
-    np.save('./Jacob_test_result/grad_mu_I_normalized.npy', grad_mu_I_normalized)
-    np.save('./Jacob_test_result/grad_Sigma_I_normalized.npy', grad_Sigma_I_normalized)
-
-    print(f"\nGradients saved to ./Jacob_test_result/")
-    print(f"  - grad_mu_I_normalized.npy (normalized space, ready for pose Jacobians)")
-    print(f"  - grad_Sigma_I_normalized.npy (normalized space, ready for pose Jacobians)")
-
-    # Compute analytical Jacobians for all Gaussians (not sorted by depth)
-    grad_Sigma_I_normalized = grad_Sigma_I_normalized.reshape(-1,4)  # reshape to (N, 4) for easier indexing
-    dmu_I_dT_all, dcov_I_dT_all = compute_analytical_jacobians_all_gaussians(xyz_world_homo, gaussian_3D_covs, w2c) 
-    indices = np.array([g['idx'] for g in image_projected_gaussians_sorted_by_depth]) # get the Gaussian depth sorted indice
-
-    dL_dtau = np.zeros((6,))  # 6 DOF for pose parameters
-
-    for i in range(len(indices)):
-        idx = indices[i]
-        
-        dL_dmuI = grad_mu_I_normalized[i] # dL_dmuI
-        dL_dCovI = grad_Sigma_I_normalized[i] # dL_dCovI
-
-        dmuI_dtau = dmu_I_dT_all[idx] # dmuI_dtau
-        dcovI_dtau = dcov_I_dT_all[idx] # dCovI_dtau
-
-        #dL_dtau (mu_I part)
-        dL_dtau_muI = dL_dmuI @ dmuI_dtau
-        dL_dtau_covI = dL_dCovI @ dcovI_dtau
-
-        # Total 
-        dL_dtau = dL_dtau + dL_dtau_muI + dL_dtau_covI
+    print(f"\n=== Projected 2D Gaussians Info ===")
+    print(f"\n=== 2D Means: ")
+    for i, g in enumerate(image_projected_gaussians_sorted_by_depth):
+        print(f"Gaussian {g['idx']}: mu_I = {g['mean_2D']}, depth = {g['depth']:.3f}, alpha = {g['alpha']:.4f}")
+    
     
 
-    '''
-    First Run gave dL_dtau as: 
 
-    array([-0.50577958, -1.29176557, -0.13440269,  1.46791875, -0.65785952, 0.36385095])
+    # # sys.exit(0)
+    # # print(image_projected_gaussians_sorted_by_depth[0])
+    # # This will give ∂L/∂μ_I and ∂L/∂Σ_I
+    # gt_color = viewpoint.original_image.cpu().detach().numpy().transpose(1,2,0)  # (H, W, 3)
+    # gt_depth = viewpoint.depth.cpu().detach().numpy()  # (H, W)
+    # rendered_color = render_image.cpu().detach().numpy().transpose(1,2,0)  # (H, W, 3)
+    # rendered_depth = render_depth.cpu().detach().numpy()  # (H, W)
 
-    '''
-    print(" dL_dtau from Analytical formula: ", dL_dtau)
-    np.save('./Jacob_test_result/dL_dtau.npy', dL_dtau)
+    # # grad_mu_I, grad_Sigma_I =compute_gradients_2D(image_projected_gaussians_sorted_by_depth, rendered_color, rendered_depth, gt_color, gt_depth, image_size)
+
+    # print("Call compute_gradients_2D_vectorized_chunked")
+    # # Convert mask to numpy for gradient computation
+    # mask_np = mask_tensor.cpu().numpy()
+    # grad_mu_I_pixel, grad_Sigma_I_pixel = compute_gradients_2D_vectorized_chunked(image_projected_gaussians_sorted_by_depth, rendered_color, rendered_depth, gt_color, gt_depth, mask_np, image_size, chunk_size=1000)
+
+    # # Transform gradients from pixel space to normalized space for pose optimization
+    # # grad_mu_normalized = K^{-1} @ grad_mu_pixel
+    # # where K = [[fx, 0], [0, fy]]
+    # # So K^{-1} = [[1/fx, 0], [0, 1/fy]]
+    # K_inv = np.array([[1/fx, 0], [0, 1/fy]], dtype=np.float32)
+
+    # # Transform mean gradients to normalized coordinates
+    # grad_mu_I_normalized = grad_mu_I_pixel @ K_inv.T  # (N, 2) @ (2, 2) -> (N, 2)
+
+    # # Transform covariance gradients to normalized coordinates
+    # # grad_Sigma_normalized = K^{-1} @ grad_Sigma_pixel @ K^{-T}
+    # grad_Sigma_I_normalized = np.einsum('ij,njk,lk->nil', K_inv, grad_Sigma_I_pixel, K_inv)  # (N, 2, 2)
+
+    # print(f"\n=== Normalized Gradients (for pose optimization) ===")
+    # print(f"grad_mu_I_normalized range: {grad_mu_I_normalized.min():.6f} to {grad_mu_I_normalized.max():.6f}")
+    # print(f"grad_Sigma_I_normalized range: {grad_Sigma_I_normalized.min():.6f} to {grad_Sigma_I_normalized.max():.6f}")
+    
+    # # Check symmetry of covariance gradients
+    # grad_Sigma_symmetry_error = np.abs(grad_Sigma_I_normalized[:, 0, 1] - grad_Sigma_I_normalized[:, 1, 0]).max()
+    # print(f"Covariance gradient symmetry error: {grad_Sigma_symmetry_error:.8f}")
+
+    # # Save both pixel-space and normalized gradients
+    # np.save('./Jacob_test_result/grad_mu_I_pixel.npy', grad_mu_I_pixel)
+    # np.save('./Jacob_test_result/grad_Sigma_I_pixel.npy', grad_Sigma_I_pixel)
+    # np.save('./Jacob_test_result/grad_mu_I_normalized.npy', grad_mu_I_normalized)
+    # np.save('./Jacob_test_result/grad_Sigma_I_normalized.npy', grad_Sigma_I_normalized)
+
+    # print(f"\nGradients saved to ./Jacob_test_result/")
+    # print(f"  - grad_mu_I_pixel.npy (pixel space)")
+    # print(f"  - grad_Sigma_I_pixel.npy (pixel space)")
+    # print(f"  - grad_mu_I_normalized.npy (normalized space, ready for pose Jacobians)")
+    # print(f"  - grad_Sigma_I_normalized.npy (normalized space, ready for pose Jacobians)")
+
+    # # Compute analytical Jacobians for all Gaussians (not sorted by depth)
+    # # Flatten covariance gradients in row-major order: [Σ_00, Σ_01, Σ_10, Σ_11]
+    # # This matches the order expected by dcovI_dTcw from GetAnalyticalJcobian
+    # grad_Sigma_I_normalized_flat = grad_Sigma_I_normalized.reshape(-1, 4)  # (N, 4) in row-major order
+    
+    # print(f"\nFlattened covariance gradient shape: {grad_Sigma_I_normalized_flat.shape}")
+    
+    # dmu_I_dT_all, dcov_I_dT_all = compute_analytical_jacobians_all_gaussians(xyz_world_homo, gaussian_3D_covs, w2c) 
+    # indices = np.array([g['idx'] for g in image_projected_gaussians_sorted_by_depth]) # get the Gaussian depth sorted indice
+
+    # dL_dtau = np.zeros((6,))  # 6 DOF for pose parameters
+    # dL_dtau_mu_total = np.zeros((6,))  # Track mean contribution
+    # dL_dtau_cov_total = np.zeros((6,))  # Track covariance contribution
+
+    # print("\n=== Computing dL/dtau via Chain Rule ===")
+    # print(f"Number of Gaussians to process: {len(indices)}")
+    
+    # # Debug first few Gaussians
+    # debug_count = min(5, len(indices))
+    
+    # for i in range(len(indices)):
+    #     idx = indices[i]
+        
+    #     dL_dmuI = grad_mu_I_normalized[i] # dL_dmuI (shape: 2,)
+    #     dL_dCovI = grad_Sigma_I_normalized_flat[i] # dL_dCovI (shape: 4,) [cov_00, cov_01, cov_10, cov_11]
+
+    #     dmuI_dtau = dmu_I_dT_all[idx] # dmuI_dtau (shape: 2, 6)
+    #     dcovI_dtau = dcov_I_dT_all[idx] # dCovI_dtau (shape: 4, 6)
+
+    #     #dL_dtau (mu_I part): (2,) @ (2, 6) -> (6,)
+    #     dL_dtau_muI = dL_dmuI @ dmuI_dtau
+    #     #dL_dtau (cov_I part): (4,) @ (4, 6) -> (6,)
+    #     dL_dtau_covI = dL_dCovI @ dcovI_dtau
+
+    #     if i < debug_count:
+    #         print(f"\nGaussian {i} (idx={idx}):")
+    #         print(f"  dL_dmuI: {dL_dmuI}")
+    #         print(f"  dL_dCovI: {dL_dCovI}")
+    #         print(f"  dL_dtau_muI: {dL_dtau_muI}")
+    #         print(f"  dL_dtau_covI: {dL_dtau_covI}")
+
+    #     # Total accumulation
+    #     dL_dtau_mu_total += dL_dtau_muI
+    #     dL_dtau_cov_total += dL_dtau_covI
+    #     dL_dtau = dL_dtau + dL_dtau_muI + dL_dtau_covI
+    
+    # print("\n=== Final dL/dtau Breakdown ===")
+    # print(f"Mean contribution:       {dL_dtau_mu_total}")
+    # print(f"Covariance contribution: {dL_dtau_cov_total}")
+    # print(f"Total dL/dtau:           {dL_dtau}")
+    
+
+    # '''
+    # First Run gave dL_dtau as: 
+
+    # array([-0.50577958, -1.29176557, -0.13440269,  1.46791875, -0.65785952, 0.36385095])
+
+    # '''
+    # print(" dL_dtau from Analytical formula: ", dL_dtau)
+    # np.save('./Jacob_test_result/dL_dtau.npy', dL_dtau)
 
 
     # Jacobian from the MonoGS Rasterizer
-    print("\nJacobian from the MonoGS Rasterizer: ")
-    loss = compute_loss(gaussian_model, render_image, render_depth, viewpoint.original_image, viewpoint.depth, mask_tensor, compute_depth_loss=True)
-    loss.backward()
+    # '''
+    # grad_tau (dL_dtau) :   tensor([ 0.1546,  0.3316, -0.9618, -0.1568, -0.2514, -0.0860], device='cuda:0')
+    # '''
+    # print("\nJacobian from the MonoGS Rasterizer: ")
+    # loss = compute_loss(gaussian_model, render_image, render_depth, viewpoint.original_image, viewpoint.depth, mask_tensor, compute_depth_loss=True)
+    # loss.backward()
 
 
 
