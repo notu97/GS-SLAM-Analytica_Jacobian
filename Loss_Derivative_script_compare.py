@@ -653,7 +653,7 @@ def transform_point_4x3(mean, viewmatrix):
     ])
     return transformed
 
-def compute_cov2d(mean_3D, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix):
+def compute_cov2d(mean_3D, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix, debug=False):
     """
     Compute 2D covariance matrix from 3D Gaussian parameters.
     
@@ -669,8 +669,15 @@ def compute_cov2d(mean_3D, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatr
     Returns:
         cov2D: 2D covariance (numpy array of shape (3,)) - [cov[0,0], cov[0,1], cov[1,1]]
     """
+
+
     # Transform point to view space
-    t = viewmatrix[0:3,0:3].transpose() @ mean_3D + viewmatrix[3,0:3]
+    view_matrix_transpose = viewmatrix.transpose()
+
+    t = view_matrix_transpose @ np.array([mean_3D[0], mean_3D[1], mean_3D[2], 1.0])
+
+    if debug:
+        print("t: ", t)
     
     # Apply limiter to avoid extreme values
     limx = 1.3 * tan_fovx
@@ -686,6 +693,7 @@ def compute_cov2d(mean_3D, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatr
         [0.0, focal_y / t[2], -(focal_y * t[1]) / (t[2] * t[2])],
         [0.0, 0.0, 0.0]
     ])
+
     
     # Extract rotation part of view matrix (column-major to row-major)
     W = np.array([
@@ -695,7 +703,7 @@ def compute_cov2d(mean_3D, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatr
     ])
     
     # Compute transformation matrix
-    T = W @ J
+    T = J @ W
     
     # Reconstruct 3D covariance matrix from upper triangular representation
     Vrk = np.array([
@@ -705,13 +713,20 @@ def compute_cov2d(mean_3D, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatr
     ])
     
     # Compute 2D covariance: cov = T^T * Vrk^T * T
-    cov = T.T @ Vrk.T @ T
+    cov = T @ Vrk @ T.T
     
     # Apply low-pass filter: every Gaussian should be at least one pixel wide/high
     cov[0, 0] += 0.3
     cov[1, 1] += 0.3
     
     cov = cov[0:2, 0:2]
+
+    if debug:
+        print("J: \n", J)
+        print("W: \n", W)
+        print("T: \n", T)
+        print("Vrk (3D cov): \n", Vrk)
+        print("2D Covariance: \n", cov)
 
     # Return upper triangular part of 2x2 covariance (discard 3rd row and column)
     return cov, Vrk
@@ -798,6 +813,14 @@ def GetImagePlaneMeanAndCovs(gaussian_model, gaussians_sorted_by_depth, gaussian
 
         # Get the 2D covariance in PIXEL space
 
+        if(idx == 29181):
+            print("mean_3D: ",mu_3D)
+            print("viewmatrix: ", render_setting['viewmatrix'].detach().cpu().numpy())
+            print("focal_x: ", fx)
+            print("focal_y: ", fy)
+            print("tan_fovx: ", render_setting['tanfovx'])
+            print("tan_fovy: ", render_setting['tanfovy'])
+
         cov_pixel, cov_3D = compute_cov2d(mu_3D, fx, fy, render_setting['tanfovx'], render_setting['tanfovy'], gaussian_3D_covs[idx], render_setting['viewmatrix'].detach().cpu().numpy())
 
         
@@ -807,7 +830,7 @@ def GetImagePlaneMeanAndCovs(gaussian_model, gaussians_sorted_by_depth, gaussian
         #                 [view_matrix[0,2], view_matrix[1,2], view_matrix[2,2]]
         #             ])
 
-        p_view =  view_matrix_transpose@np.array([p_proj[0], p_proj[1], p_proj[2], 1.0])  #(view_mat @ proj_hom[0:3]) + np.array([view_matrix[3,0], view_matrix[3,1], view_matrix[3,2]])
+        p_view =  view_matrix_transpose@np.array([mu_3D[0], mu_3D[1], mu_3D[2], 1.0])  #(view_mat @ proj_hom[0:3]) + np.array([view_matrix[3,0], view_matrix[3,1], view_matrix[3,2]])
         
         temp_dict['depth'] = p_view[2]
 
@@ -832,6 +855,7 @@ def GetImagePlaneMeanAndCovs(gaussian_model, gaussians_sorted_by_depth, gaussian
         
         temp_dict['cov_2D'] = cov_pixel
         temp_dict['cov_3D'] = cov_3D
+        temp_dict['cov_3D_striped'] = gaussian_3D_covs[idx]
         
         projected_mean_and_covs.append(temp_dict)
 
@@ -1365,6 +1389,13 @@ if __name__ == "__main__":
     # Get Gaussian covariance and opcaity.
     gaussian_3D_covs = gaussian_model.get_covariance().detach().cpu().numpy()
     opacity = gaussian_model.get_opacity.detach().cpu().numpy()
+
+    # get and print scales:
+    scales = gaussian_model.get_scaling.detach().cpu().numpy()
+    print(f"Gaussians in World scales ids: 29181 :\n{scales[29181]}")
+
+    rotation = gaussian_model.get_rotation.detach().cpu().numpy()
+    print(f"Gaussians in World rotation ids: 29181 :\n{rotation[29181]}")
 
     print(f"Gaussians in World gaussian_3D_covs:\n{gaussian_3D_covs}")
     print(f"Gaussians in World opacity:\n{opacity}")
