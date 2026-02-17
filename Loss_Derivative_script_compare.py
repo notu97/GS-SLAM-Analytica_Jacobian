@@ -1464,10 +1464,10 @@ if __name__ == "__main__":
     )
 
     # Display Rendered Image
-    DisplayRenderedImage(viewpoint, render_image)
+    # DisplayRenderedImage(viewpoint, render_image)
 
     # Visualize Gaussians In World Frame
-    VisualizeGaussiansInWorldFrame(gaussian_model)
+    # VisualizeGaussiansInWorldFrame(gaussian_model)
 
 
     # Transform Gaussians from world coordinates to camera coordinates
@@ -1495,7 +1495,7 @@ if __name__ == "__main__":
     print(f"Depth (Z) range: {xyz_cam[:, 2].min():.3f} to {xyz_cam[:, 2].max():.3f}")
 
     # Visualize Gaussians In Camera Frame
-    VisualizeGaussiansInCameraFrame(xyz_cam)
+    # VisualizeGaussiansInCameraFrame(xyz_cam)
 
 
 
