@@ -1,0 +1,192 @@
+{
+    "os": "Linux-5.15.0-116-generic-x86_64-with-glibc2.31",
+    "python": "3.10.14",
+    "heartbeatAt": "2024-07-23T05:17:24.083611",
+    "startedAt": "2024-07-23T05:17:23.354934",
+    "docker": null,
+    "cuda": null,
+    "args": [
+        "--config",
+        "configs/rgbd/tum/fr1_desk_yolov8.yaml",
+        "--eval"
+    ],
+    "state": "running",
+    "program": "/home/shiladitya/Projects/MonoGS/slam.py",
+    "codePathLocal": "slam.py",
+    "codePath": "slam.py",
+    "git": {
+        "remote": "https://github.com/muskie82/MonoGS.git",
+        "commit": "6c9254c319d8bff5caeef65259e6bb0941a9b9f6"
+    },
+    "email": null,
+    "root": "/home/shiladitya/Projects/MonoGS",
+    "host": "biswas",
+    "username": "shiladitya",
+    "executable": "/home/shiladitya/anaconda3/envs/MonoGS/bin/python",
+    "cpu_count": 20,
+    "cpu_count_logical": 28,
+    "cpu_freq": {
+        "current": 3317.442785714286,
+        "min": 800.0,
+        "max": 5007.142857142857
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 1088.398,
+            "min": 800.0,
+            "max": 5700.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5600.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5600.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5600.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5600.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 5500.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        },
+        {
+            "current": 3400.0,
+            "min": 800.0,
+            "max": 4300.0
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 915.3232879638672,
+            "used": 54.50429153442383
+        }
+    },
+    "gpu": "NVIDIA GeForce RTX 4060 Ti",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "NVIDIA GeForce RTX 4060 Ti",
+            "memory_total": 17175674880
+        }
+    ],
+    "memory": {
+        "total": 31.11853790283203
+    }
+}

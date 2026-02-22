@@ -1,0 +1,6 @@
+means2D_backward_debug.txt
+means3D_debug.txt
+yolov8x-seg.pt
+result_my_script.txt
+.gitignore
+result.txt

@@ -1,0 +1,36 @@
+[1mMonoGS:[22m Evaluating ATE at frame:  [1m21
+[1mEval:[22m RMSE ATE [1m[[22mm[1m][22m [1m0.024561625155445056
+[1mMonoGS:[22m Evaluating ATE at frame:  [1m58
+[1mEval:[22m RMSE ATE [1m[[22mm[1m][22m [1m0.0914290599430582
+Traceback (most recent call last):
+  File "/home/shiladitya/Projects/MonoGS/slam.py", line 252, in <module>
+    slam = SLAM(config, save_dir=save_dir)
+  File "/home/shiladitya/Projects/MonoGS/slam.py", line 110, in __init__
+    self.frontend.run()
+  File "/home/shiladitya/Projects/MonoGS/utils/slam_frontend.py", line 392, in run
+    render_pkg = self.tracking(cur_frame_idx, viewpoint)
+  File "/home/shiladitya/Projects/MonoGS/utils/slam_frontend.py", line 180, in tracking
+    converged = update_pose(viewpoint)
+  File "/home/shiladitya/Projects/MonoGS/utils/pose_utils.py", line 83, in update_pose
+    new_w2c = SE3_exp(tau) @ T_w2c
+  File "/home/shiladitya/Projects/MonoGS/utils/pose_utils.py", line 67, in SE3_exp
+    R = SO3_exp(theta)
+  File "/home/shiladitya/Projects/MonoGS/utils/pose_utils.py", line 33, in SO3_exp
+    if angle < 1e-5:
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/home/shiladitya/Projects/MonoGS/slam.py", line 252, in <module>
+    slam = SLAM(config, save_dir=save_dir)
+  File "/home/shiladitya/Projects/MonoGS/slam.py", line 110, in __init__
+    self.frontend.run()
+  File "/home/shiladitya/Projects/MonoGS/utils/slam_frontend.py", line 392, in run
+    render_pkg = self.tracking(cur_frame_idx, viewpoint)
+  File "/home/shiladitya/Projects/MonoGS/utils/slam_frontend.py", line 180, in tracking
+    converged = update_pose(viewpoint)
+  File "/home/shiladitya/Projects/MonoGS/utils/pose_utils.py", line 83, in update_pose
+    new_w2c = SE3_exp(tau) @ T_w2c
+  File "/home/shiladitya/Projects/MonoGS/utils/pose_utils.py", line 67, in SE3_exp
+    R = SO3_exp(theta)
+  File "/home/shiladitya/Projects/MonoGS/utils/pose_utils.py", line 33, in SO3_exp
+    if angle < 1e-5:
+KeyboardInterrupt

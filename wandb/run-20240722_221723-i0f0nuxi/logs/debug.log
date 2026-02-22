@@ -1,0 +1,28 @@
+2024-07-22 22:17:23,356 INFO    MainThread:39358 [wandb_setup.py:_flush():76] Current SDK version is 0.17.5
+2024-07-22 22:17:23,356 INFO    MainThread:39358 [wandb_setup.py:_flush():76] Configure stats pid to 39358
+2024-07-22 22:17:23,356 INFO    MainThread:39358 [wandb_setup.py:_flush():76] Loading settings from /home/shiladitya/.config/wandb/settings
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_setup.py:_flush():76] Loading settings from /home/shiladitya/Projects/MonoGS/wandb/settings
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_setup.py:_flush():76] Applying setup settings: {'_disable_service': False}
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'slam.py', 'program_abspath': '/home/shiladitya/Projects/MonoGS/slam.py', 'program': '/home/shiladitya/Projects/MonoGS/slam.py'}
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_setup.py:_flush():76] Applying login settings: {}
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_setup.py:_flush():76] Applying login settings: {'api_key': '***REDACTED***'}
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_init.py:_log_setup():529] Logging user logs to /home/shiladitya/Projects/MonoGS/wandb/run-20240722_221723-i0f0nuxi/logs/debug.log
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_init.py:_log_setup():530] Logging internal logs to /home/shiladitya/Projects/MonoGS/wandb/run-20240722_221723-i0f0nuxi/logs/debug-internal.log
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_init.py:init():569] calling init triggers
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_init.py:init():576] wandb.init called with sweep_config: {}
+config: {'Results': {'save_results': True, 'save_dir': 'results/datasets_tum/2024-07-22-22-17-15', 'save_trj': True, 'save_trj_kf_intv': 5, 'use_gui': False, 'eval_rendering': True, 'use_wandb': True}, 'Dataset': {'type': 'tum', 'sensor_type': 'depth', 'pcd_downsample': 128, 'pcd_downsample_init': 32, 'adaptive_pointsize': True, 'point_size': 0.01, 'dataset_path': 'datasets/tum/rgbd_dataset_fr1_yolov8', 'Calibration': {'fx': 517.306408, 'fy': 516.469215, 'cx': 318.64304, 'cy': 255.313989, 'k1': 0.262383, 'k2': -0.953104, 'p1': -0.005358, 'p2': 0.002628, 'k3': 1.163314, 'distorted': True, 'width': 640, 'height': 480, 'depth_scale': 5000.0}}, 'Training': {'init_itr_num': 1050, 'init_gaussian_update': 100, 'init_gaussian_reset': 500, 'init_gaussian_th': 0.005, 'init_gaussian_extent': 30, 'tracking_itr_num': 100, 'mapping_itr_num': 150, 'gaussian_update_every': 150, 'gaussian_update_offset': 50, 'gaussian_th': 0.7, 'gaussian_extent': 1.0, 'gaussian_reset': 2001, 'size_threshold': 20, 'kf_interval': 5, 'window_size': 8, 'pose_window': 3, 'edge_threshold': 1.1, 'rgb_boundary_threshold': 0.01, 'alpha': 0.9, 'kf_translation': 0.08, 'kf_min_translation': 0.05, 'kf_overlap': 0.9, 'kf_cutoff': 0.3, 'prune_mode': 'slam', 'single_thread': False, 'spherical_harmonics': False, 'lr': {'cam_rot_delta': 0.003, 'cam_trans_delta': 0.001}}, 'opt_params': {'iterations': 30000, 'position_lr_init': 0.00016, 'position_lr_final': 1.6e-06, 'position_lr_delay_mult': 0.01, 'position_lr_max_steps': 30000, 'feature_lr': 0.0025, 'opacity_lr': 0.05, 'scaling_lr': 0.001, 'rotation_lr': 0.001, 'percent_dense': 0.01, 'lambda_dssim': 0.2, 'densification_interval': 100, 'opacity_reset_interval': 3000, 'densify_from_iter': 500, 'densify_until_iter': 15000, 'densify_grad_threshold': 0.0002}, 'model_params': {'sh_degree': 0, 'source_path': '', 'model_path': '', 'resolution': -1, 'white_background': False, 'data_device': 'cuda'}, 'pipeline_params': {'convert_SHs_python': False, 'compute_cov3D_python': False}, 'inherit_from': 'configs/rgbd/tum/base_config.yaml'}
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_init.py:init():619] starting backend
+2024-07-22 22:17:23,357 INFO    MainThread:39358 [wandb_init.py:init():623] setting up manager
+2024-07-22 22:17:23,359 INFO    MainThread:39358 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2024-07-22 22:17:23,359 INFO    MainThread:39358 [wandb_init.py:init():631] backend started and connected
+2024-07-22 22:17:23,360 INFO    MainThread:39358 [wandb_init.py:init():720] updated telemetry
+2024-07-22 22:17:23,364 INFO    MainThread:39358 [wandb_init.py:init():753] communicating run to backend with 90.0 second timeout
+2024-07-22 22:17:23,884 INFO    MainThread:39358 [wandb_run.py:_on_init():2435] communicating current version
+2024-07-22 22:17:23,993 INFO    MainThread:39358 [wandb_run.py:_on_init():2444] got version response 
+2024-07-22 22:17:23,993 INFO    MainThread:39358 [wandb_init.py:init():804] starting run threads in backend
+2024-07-22 22:17:26,248 INFO    MainThread:39358 [wandb_run.py:_console_start():2413] atexit reg
+2024-07-22 22:17:26,248 INFO    MainThread:39358 [wandb_run.py:_redirect():2255] redirect: wrap_raw
+2024-07-22 22:17:26,248 INFO    MainThread:39358 [wandb_run.py:_redirect():2320] Wrapping output streams.
+2024-07-22 22:17:26,248 INFO    MainThread:39358 [wandb_run.py:_redirect():2345] Redirects installed.
+2024-07-22 22:17:26,249 INFO    MainThread:39358 [wandb_init.py:init():847] run started, returning control to user process
